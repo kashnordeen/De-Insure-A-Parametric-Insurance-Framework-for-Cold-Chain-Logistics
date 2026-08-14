@@ -1,0 +1,7 @@
+torch
+xgboost
+scikit-learn
+pandas
+numpy
+imbalanced-learn
+paho-mqtt
