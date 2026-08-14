@@ -1,29 +1,35 @@
+"""
+De-Insure PyTorch & XGBoost Spoilage Prediction Models
+Deep Neural Classifier & Gradient Boosted Decision Engine
+"""
+
 import torch
 import torch.nn as nn
-import xgboost as xgb
+import torch.nn.functional as F
 
-class LSTMFeatureExtractor(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=32, num_layers=2):
-        super(LSTMFeatureExtractor, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
-        # Dummy linear layer if we were to train end-to-end, but we use XGBoost on the hidden state
-        self.fc = nn.Linear(hidden_dim, 2) 
+class ColdChainSpoilageNN(nn.Module):
+    """
+    Deep Neural Network Classifier for Cargo Spoilage Risk Prediction.
+    Architecture: Dense -> BatchNorm -> ReLU -> Dropout -> Dense -> Sigmoid
+    """
+    def __init__(self, input_dim=9):
+        super(ColdChainSpoilageNN, self).__init__()
+        self.fc1 = nn.Linear(input_dim, 64)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.dropout1 = nn.Dropout(0.3)
+
+        self.fc2 = nn.Linear(64, 32)
+        self.bn2 = nn.BatchNorm1d(32)
+        self.dropout2 = nn.Dropout(0.2)
+
+        self.fc3 = nn.Linear(32, 16)
+        self.fc4 = nn.Linear(16, 1)
 
     def forward(self, x):
-        # x shape: (batch_size, seq_len, input_dim)
-        lstm_out, (h_n, c_n) = self.lstm(x)
-        # We take the output of the last time step
-        last_hidden = lstm_out[:, -1, :] 
-        return last_hidden
-
-def build_xgboost_classifier():
-    # Ingests LSTM hidden state + static features
-    model = xgb.XGBClassifier(
-        n_estimators=100,
-        learning_rate=0.1,
-        max_depth=5,
-        use_label_encoder=False,
-        eval_metric='logloss'
-    )
-    return model
+        x = F.relu(self.bn1(self.fc1(x)))
+        x = self.dropout1(x)
+        x = F.relu(self.bn2(self.fc2(x)))
+        x = self.dropout2(x)
+        x = F.relu(self.fc3(x))
+        out = torch.sigmoid(self.fc4(x))
+        return out

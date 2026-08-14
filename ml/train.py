@@ -1,106 +1,162 @@
-import numpy as np
-import pandas as pd
+"""
+De-Insure Multi-Epoch Multi-Fold ML Training Engine
+Executes 5-Fold Stratified Cross-Validation across 50 Epochs with Learning Rate Scheduling.
+Computes & Exports Precision, Recall, F1-Score, Confusion Matrix, and ROC-AUC.
+"""
+
+import os
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from imblearn.over_sampling import SMOTE
-from model import LSTMFeatureExtractor, build_xgboost_classifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 
-def create_sequences(data, seq_length=60):
-    sequences = []
-    labels = []
-    # Data columns: [temperature, humidity, vibration, s_t, spoilage_flag]
-    for i in range(len(data) - seq_length):
-        seq = data[i : i + seq_length, 0:1] # Just temp for LSTM
-        label = data[i + seq_length - 1, 4] # Spoilage flag at the end of the window
-        
-        # Static features (max hum, max vib in the window)
-        static_hum = np.max(data[i : i + seq_length, 1])
-        static_vib = np.max(data[i : i + seq_length, 2])
-        
-        sequences.append((seq, static_hum, static_vib))
-        labels.append(label)
-        
-    return sequences, np.array(labels)
+from dataset_loader import generate_cold_chain_dataset
+from model import ColdChainSpoilageNN
 
-print("Loading dataset...")
-df = pd.read_csv('telemetry_data.csv')
-data_arr = df.values
+# Configuration
+EPOCHS = 50
+BATCH_SIZE = 32
+LEARNING_RATE = 0.005
+N_SPLITS = 5
+SEED = 42
 
-print("Creating sequences...")
-sequences, labels = create_sequences(data_arr, seq_length=60)
+def train_pipeline():
+    print("=" * 65)
+    print("  De-Insure ML Pipeline: Multi-Epoch 5-Fold Cross-Validation")
+    print("=" * 65)
 
-# We have imbalanced data usually, but our synthetic data is somewhat balanced. 
-# We still apply SMOTE on a flattened representation to adhere to the requirements.
+    df = generate_cold_chain_dataset(samples=2500, seed=SEED)
+    
+    feature_cols = [
+        "mean_temp", "max_temp", "min_temp", "temp_std", "mkt",
+        "humidity", "duration_minutes", "excursion_ratio", "critical_spike"
+    ]
+    
+    X = df[feature_cols].values
+    y = df["spoilage_label"].values
 
-# Flatten sequence + static features for SMOTE
-flattened_X = []
-for seq, h, v in sequences:
-    flattened_X.append(np.concatenate([seq.flatten(), [h, v]]))
-flattened_X = np.array(flattened_X)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
 
-print(f"Original class distribution: {np.bincount(labels.astype(int))}")
-smote = SMOTE(sampling_strategy='minority')
-X_resampled, y_resampled = smote.fit_resample(flattened_X, labels)
-print(f"Resampled class distribution: {np.bincount(y_resampled.astype(int))}")
+    skf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=SEED)
 
-# Reconstruct sequences
-X_seq_resampled = X_resampled[:, :-2].reshape(-1, 60, 1)
-X_static_resampled = X_resampled[:, -2:]
+    fold_metrics = []
+    best_model_state = None
+    best_f1 = 0.0
 
-# Split
-X_train_seq, X_test_seq, X_train_stat, X_test_stat, y_train, y_test = train_test_split(
-    X_seq_resampled, X_static_resampled, y_resampled, test_size=0.2, random_state=42
-)
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X_scaled, y), 1):
+        print(f"\n--- Training Fold {fold}/{N_SPLITS} ---")
 
-# Convert to tensors
-X_train_seq_t = torch.tensor(X_train_seq, dtype=torch.float32)
-y_train_t = torch.tensor(y_train, dtype=torch.long)
+        X_train, y_train = torch.tensor(X_scaled[train_idx], dtype=torch.float32), torch.tensor(y[train_idx], dtype=torch.float32).unsqueeze(1)
+        X_val, y_val = torch.tensor(X_scaled[val_idx], dtype=torch.float32), torch.tensor(y[val_idx], dtype=torch.float32).unsqueeze(1)
 
-# 1. Train LSTM as feature extractor (Mock pre-training)
-lstm = LSTMFeatureExtractor(input_dim=1, hidden_dim=32)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(lstm.parameters(), lr=0.001)
+        train_dataset = TensorDataset(X_train, y_train)
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-print("Training LSTM...")
-dataset = TensorDataset(X_train_seq_t, y_train_t)
-loader = DataLoader(dataset, batch_size=64, shuffle=True)
+        model = ColdChainSpoilageNN(input_dim=len(feature_cols))
+        criterion = nn.BCELoss()
+        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-for epoch in range(2): # Short training for demonstration
-    for batch_X, batch_y in loader:
-        optimizer.zero_grad()
-        hidden = lstm(batch_X)
-        output = lstm.fc(hidden)
-        loss = criterion(output, batch_y)
-        loss.backward()
-        optimizer.step()
-print("LSTM Training complete.")
+        for epoch in range(1, EPOCHS + 1):
+            model.train()
+            train_loss = 0.0
+            for batch_x, batch_y in train_loader:
+                optimizer.zero_grad()
+                preds = model(batch_x)
+                loss = criterion(preds, batch_y)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item() * batch_x.size(0)
 
-# 2. Extract features using trained LSTM
-with torch.no_grad():
-    train_features_lstm = lstm(X_train_seq_t).numpy()
-    test_features_lstm = lstm(torch.tensor(X_test_seq, dtype=torch.float32)).numpy()
+            train_loss /= len(train_loader.dataset)
 
-# Combine LSTM features with static features
-X_train_xgb = np.hstack((train_features_lstm, X_train_stat))
-X_test_xgb = np.hstack((test_features_lstm, X_test_stat))
+            # Validation
+            model.eval()
+            with torch.no_grad():
+                val_preds = model(X_val)
+                val_loss = criterion(val_preds, y_val).item()
 
-# 3. Train XGBoost
-print("Training XGBoost Classifier...")
-xgb_model = build_xgboost_classifier()
-xgb_model.fit(X_train_xgb, y_train)
+            scheduler.step(val_loss)
 
-# Evaluate
-preds = xgb_model.predict(X_test_xgb)
-acc = accuracy_score(y_test, preds)
-print(f"Hybrid Model Accuracy: {acc * 100:.2f}%")
-print("Classification Report:")
-print(classification_report(y_test, preds))
+            if epoch % 10 == 0 or epoch == EPOCHS:
+                print(f"  Epoch [{epoch:02d}/{EPOCHS}] | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
 
-# Save models
-torch.save(lstm.state_dict(), 'lstm_model.pth')
-xgb_model.save_model('xgboost_model.json')
-print("Models saved.")
+        # Fold Evaluation
+        model.eval()
+        with torch.no_grad():
+            raw_probs = model(X_val).numpy().flatten()
+            binary_preds = (raw_probs >= 0.5).astype(int)
+
+        p = precision_score(y[val_idx], binary_preds, zero_division=0)
+        r = recall_score(y[val_idx], binary_preds, zero_division=0)
+        f1 = f1_score(y[val_idx], binary_preds, zero_division=0)
+        auc = roc_auc_score(y[val_idx], raw_probs)
+        cm = confusion_matrix(y[val_idx], binary_preds).tolist()
+
+        fold_metrics.append({
+            "fold": fold,
+            "precision": round(float(p), 4),
+            "recall": round(float(r), 4),
+            "f1_score": round(float(f1), 4),
+            "roc_auc": round(float(auc), 4),
+            "confusion_matrix": cm
+        })
+
+        print(f"  --> Fold {fold} Metrics | Precision: {p:.4f} | Recall: {r:.4f} | F1: {f1:.4f} | ROC-AUC: {auc:.4f}")
+
+        if f1 > best_f1:
+            best_f1 = f1
+            best_model_state = model.state_dict()
+
+    # Mean Metrics across Folds
+    mean_precision = float(np.mean([m["precision"] for m in fold_metrics]))
+    mean_recall = float(np.mean([m["recall"] for m in fold_metrics]))
+    mean_f1 = float(np.mean([m["f1_score"] for m in fold_metrics]))
+    mean_auc = float(np.mean([m["roc_auc"] for m in fold_metrics]))
+
+    summary = {
+        "dataset_samples": len(df),
+        "features": feature_cols,
+        "epochs": EPOCHS,
+        "k_folds": N_SPLITS,
+        "mean_metrics": {
+            "precision": round(mean_precision, 4),
+            "recall": round(mean_recall, 4),
+            "f1_score": round(mean_f1, 4),
+            "roc_auc": round(mean_auc, 4)
+        },
+        "fold_details": fold_metrics
+    }
+
+    print("\n" + "=" * 65)
+    print("  FINAL MULTI-FOLD EVALUATION SUMMARY")
+    print("=" * 65)
+    print(f"  Average Precision : {mean_precision:.4f}")
+    print(f"  Average Recall    : {mean_recall:.4f}")
+    print(f"  Average F1 Score  : {mean_f1:.4f}")
+    print(f"  Average ROC-AUC   : {mean_auc:.4f}")
+
+    # Save Model Weights & Scaler
+    model_dir = os.path.dirname(__file__)
+    torch.save(best_model_state, os.path.join(model_dir, "spoilage_nn.pth"))
+
+    import joblib
+    joblib.dump(scaler, os.path.join(model_dir, "scaler.joblib"))
+
+    report_path = os.path.join(model_dir, "metrics_report.json")
+    with open(report_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\n[SUCCESS] Model checkpoint saved to 'ml/spoilage_nn.pth'")
+    print(f"[SUCCESS] Scaler saved to 'ml/scaler.joblib'")
+    print(f"[SUCCESS] Metrics report saved to 'ml/metrics_report.json'\n")
+
+if __name__ == "__main__":
+    train_pipeline()

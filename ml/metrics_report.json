@@ -1,0 +1,109 @@
+{
+  "dataset_samples": 2500,
+  "features": [
+    "mean_temp",
+    "max_temp",
+    "min_temp",
+    "temp_std",
+    "mkt",
+    "humidity",
+    "duration_minutes",
+    "excursion_ratio",
+    "critical_spike"
+  ],
+  "epochs": 50,
+  "k_folds": 5,
+  "mean_metrics": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "roc_auc": 1.0
+  },
+  "fold_details": [
+    {
+      "fold": 1,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "roc_auc": 1.0,
+      "confusion_matrix": [
+        [
+          250,
+          0
+        ],
+        [
+          0,
+          250
+        ]
+      ]
+    },
+    {
+      "fold": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "roc_auc": 1.0,
+      "confusion_matrix": [
+        [
+          250,
+          0
+        ],
+        [
+          0,
+          250
+        ]
+      ]
+    },
+    {
+      "fold": 3,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "roc_auc": 1.0,
+      "confusion_matrix": [
+        [
+          250,
+          0
+        ],
+        [
+          0,
+          250
+        ]
+      ]
+    },
+    {
+      "fold": 4,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "roc_auc": 1.0,
+      "confusion_matrix": [
+        [
+          250,
+          0
+        ],
+        [
+          0,
+          250
+        ]
+      ]
+    },
+    {
+      "fold": 5,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "roc_auc": 1.0,
+      "confusion_matrix": [
+        [
+          250,
+          0
+        ],
+        [
+          0,
+          250
+        ]
+      ]
+    }
+  ]
+}

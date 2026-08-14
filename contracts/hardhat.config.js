@@ -1,5 +1,5 @@
 require("@nomicfoundation/hardhat-toolbox");
-require("dotenv").config({ path: "../.env" });
+try { require("dotenv").config({ path: "../.env" }); } catch (e) {}
 
 module.exports = {
   solidity: {
